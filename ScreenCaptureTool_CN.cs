@@ -1437,7 +1437,7 @@ namespace ScreenCaptureToolCN
 
             try
             {
-                var imageRect = ScaleRectToImage(selectionRect);
+                var imageRect = ExpandRectForOcr(ScaleRectToImage(selectionRect)); // OCR 前自动外扩选区，提高轻微偏移时的识别容错
                 var text = OcrHelper.RecognizeBitmap(CropBitmap(previewBitmap, imageRect));
                 if (string.IsNullOrWhiteSpace(text))
                 {
@@ -1540,6 +1540,14 @@ namespace ScreenCaptureToolCN
             return rect;
         }
 
+        private Rectangle ExpandRectForOcr(Rectangle rect)
+        {
+            var padding = Math.Max(8, Math.Min(18, Math.Min(rect.Width, rect.Height) / 8)); // OCR 容错：自动外扩一点边距，减少笔画被截断
+            var expanded = new Rectangle(rect.X - padding, rect.Y - padding, rect.Width + padding * 2, rect.Height + padding * 2);
+            expanded.Intersect(new Rectangle(0, 0, previewBitmap.Width, previewBitmap.Height));
+            return expanded;
+        }
+
         private static Bitmap CropBitmap(Bitmap source, Rectangle rect)
         {
             if (rect.Width <= 0 || rect.Height <= 0)
@@ -1600,6 +1608,8 @@ namespace ScreenCaptureToolCN
 
     internal static class OcrHelper
     {
+        private const int OcrUpscaleFactor = 2;
+
         public static string RecognizeBitmap(Bitmap bitmap)
         {
             if (bitmap == null)
@@ -1607,10 +1617,12 @@ namespace ScreenCaptureToolCN
                 throw new InvalidOperationException("没有可供 OCR 的图片。");
             }
 
+            Bitmap preparedBitmap = null;
             var tempPath = Path.Combine(Path.GetTempPath(), "screen_capture_ocr_" + Guid.NewGuid().ToString("N") + ".png");
             try
             {
-                bitmap.Save(tempPath, ImageFormat.Png);
+                preparedBitmap = PrepareBitmapForRecognition(bitmap); // OCR 预处理：放大 + 灰度增强，提高小字和轻微偏移时的识别率
+                preparedBitmap.Save(tempPath, ImageFormat.Png);
                 return RecognizeFile(tempPath);
             }
             finally
@@ -1626,8 +1638,59 @@ namespace ScreenCaptureToolCN
                 {
                 }
 
+                if (preparedBitmap != null)
+                {
+                    preparedBitmap.Dispose();
+                }
                 bitmap.Dispose();
             }
+        }
+
+        private static Bitmap PrepareBitmapForRecognition(Bitmap source)
+        {
+            var scaledWidth = Math.Max(1, source.Width * OcrUpscaleFactor);
+            var scaledHeight = Math.Max(1, source.Height * OcrUpscaleFactor);
+            var output = new Bitmap(scaledWidth, scaledHeight, PixelFormat.Format24bppRgb);
+
+            using (var graphics = Graphics.FromImage(output))
+            using (var attributes = new ImageAttributes())
+            {
+                graphics.Clear(Color.White);
+                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+
+                var colorMatrix = new ColorMatrix(new[]
+                {
+                    new[] { 1.15f, 0f, 0f, 0f, 0f },
+                    new[] { 0f, 1.15f, 0f, 0f, 0f },
+                    new[] { 0f, 0f, 1.15f, 0f, 0f },
+                    new[] { 0f, 0f, 0f, 1f, 0f },
+                    new[] { -0.05f, -0.05f, -0.05f, 0f, 1f }
+                });
+                attributes.SetColorMatrix(colorMatrix);
+                graphics.DrawImage(source, new Rectangle(0, 0, scaledWidth, scaledHeight), 0, 0, source.Width, source.Height, GraphicsUnit.Pixel, attributes);
+            }
+
+            return ToHighContrastGrayscale(output);
+        }
+
+        private static Bitmap ToHighContrastGrayscale(Bitmap source)
+        {
+            var result = new Bitmap(source.Width, source.Height, PixelFormat.Format24bppRgb);
+            for (var y = 0; y < source.Height; y++)
+            {
+                for (var x = 0; x < source.Width; x++)
+                {
+                    var color = source.GetPixel(x, y);
+                    var gray = (int)Math.Min(255, Math.Max(0, color.R * 0.30 + color.G * 0.59 + color.B * 0.11));
+                    gray = gray < 150 ? Math.Max(0, gray - 35) : Math.Min(255, gray + 18); // 轻量增强对比度，避免过度二值化造成细字断裂
+                    result.SetPixel(x, y, Color.FromArgb(gray, gray, gray));
+                }
+            }
+
+            source.Dispose();
+            return result;
         }
 
         private static string RecognizeFile(string imagePath)
