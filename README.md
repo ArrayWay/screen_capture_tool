@@ -101,6 +101,35 @@
 
 可以，但建议先备份 `screen_capture_settings_native_cn.ini`，再修改快捷键或相关行为设置。
 
+## GitHub Releases 自动发布
+
+仓库已补充 GitHub Actions 自动发布流程。
+
+### 触发方式
+
+当你向远端推送符合 `v*` 规则的 tag 时，会自动创建 GitHub Release。
+
+示例：
+
+- `v1.0-trial` → 自动识别为 **试用版 V1.0**，并标记为预发布
+- `v1.1` → 自动识别为正式版 `V1.1`
+
+### 自动上传的 Release 资产
+
+- `screen_capture_tool_<tag>.zip`
+- `ScreenCaptureTool_CN.exe`
+- `run_screen_capture_tool.vbs`
+
+### 发布正文来源
+
+- 自动 Release 正文优先从 `CHANGELOG.md` 中按 tag 对应区块自动抽取  <!-- 改为单一事实来源，减少重复维护 -->
+- 工作流文件：`.github/workflows/release.yml`
+- `RELEASE_BODY.md` 可继续保留为手工发布参考草稿
+
+### 使用建议
+
+如需发布 `试用版 V1.0`，只需推送对应 tag 即可。后续如要调整自动发布正文，直接编辑 `CHANGELOG.md` 中对应版本区块即可。  <!-- 说明自动发布入口，便于后续维护 -->
+
 ## 更新日志
 
 详见：[`CHANGELOG.md`](./CHANGELOG.md)

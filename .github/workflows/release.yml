@@ -1,0 +1,112 @@
+name: Publish GitHub Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $title = $tag
+          $isPrerelease = "false"
+
+          # 自动识别试用版 / 预发布标签，减少手工维护成本
+          if ($tag -match '^v(?<version>\d+(?:\.\d+)*)-trial$') {
+            $title = "试用版 V$($Matches.version)"
+            $isPrerelease = "true"
+          }
+          elseif ($tag -match '^v(?<version>\d+(?:\.\d+)*)$') {
+            $title = "V$($Matches.version)"
+          }
+          elseif ($tag -match 'trial|alpha|beta|rc') {
+            $isPrerelease = "true"
+          }
+
+          "RELEASE_TITLE=$title" >> $env:GITHUB_ENV
+          "IS_PRERELEASE=$isPrerelease" >> $env:GITHUB_ENV
+
+      - name: Extract release notes from CHANGELOG
+        shell: pwsh
+        run: |
+          # 从 CHANGELOG.md 中按 tag 精确抽取对应版本区块，避免重复维护单独的 Release 正文文件
+          $tag = "${{ github.ref_name }}"
+          $changelogPath = "CHANGELOG.md"
+          $releaseNotesPath = Join-Path $env:RUNNER_TEMP "release_notes.md"
+
+          if (-not (Test-Path $changelogPath)) {
+            throw "CHANGELOG.md not found."
+          }
+
+          $content = Get-Content -LiteralPath $changelogPath -Raw -Encoding UTF8
+          $escapedTag = [regex]::Escape($tag)
+          $pattern = "(?ms)^## \[$escapedTag\].*?(?=^## \[|\z)"
+          $match = [regex]::Match($content, $pattern)
+
+          if (-not $match.Success) {
+            throw "Cannot find changelog section for tag [$tag] in CHANGELOG.md"
+          }
+
+          $notes = $match.Value.Trim()
+          Set-Content -LiteralPath $releaseNotesPath -Value $notes -Encoding UTF8
+
+          "RELEASE_NOTES_PATH=$releaseNotesPath" >> $env:GITHUB_ENV
+
+      - name: Build release archive
+        shell: pwsh
+        run: |
+          # 打包当前项目的可运行文件，作为 Release 资产上传
+          $tag = "${{ github.ref_name }}"
+          $bundleName = "screen_capture_tool_$tag.zip"
+          $bundleItems = @(
+            "ScreenCaptureTool_CN.exe",
+            "run_screen_capture_tool.vbs",
+            "screen_capture_settings_native_cn.ini",
+            "README.md",
+            "CHANGELOG.md",
+            "使用界面.png",
+            "ScreenCaptureTool_CN.ico"
+          )
+
+          $stageDir = Join-Path $env:RUNNER_TEMP "screen_capture_tool_release"
+          $zipPath = Join-Path $env:RUNNER_TEMP $bundleName
+
+          if (Test-Path $stageDir) {
+            Remove-Item -Path $stageDir -Recurse -Force
+          }
+          if (Test-Path $zipPath) {
+            Remove-Item -Path $zipPath -Force
+          }
+
+          New-Item -ItemType Directory -Path $stageDir | Out-Null
+
+          foreach ($item in $bundleItems) {
+            Copy-Item -LiteralPath $item -Destination $stageDir
+          }
+
+          Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $zipPath -Force
+
+          "ZIP_PATH=$zipPath" >> $env:GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.RELEASE_TITLE }}
+          body_path: ${{ env.RELEASE_NOTES_PATH }}
+          prerelease: ${{ env.IS_PRERELEASE }}
+          files: |
+            ${{ env.ZIP_PATH }}
+            ScreenCaptureTool_CN.exe
+            run_screen_capture_tool.vbs
