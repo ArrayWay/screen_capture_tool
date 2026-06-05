@@ -1,0 +1,15 @@
+# Build outputs
+bin/
+obj/
+
+# IDE and user-specific files
+.vs/
+*.user
+*.suo
+
+# Logs
+*.log
+
+# Windows system files
+Thumbs.db
+Desktop.ini
