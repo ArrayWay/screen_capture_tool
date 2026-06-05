@@ -1173,6 +1173,7 @@ namespace ScreenCaptureToolCN
         private float zoomFactor = 1.0f;
         private bool isSelectingOcr;
         private bool isDraggingSelection;
+        private int ocrAppendCount; // 连续 OCR 次数计数，用于状态提示
         private Point selectionStart;
         private Rectangle selectionRect;
 
@@ -1308,7 +1309,7 @@ namespace ScreenCaptureToolCN
                     btnOcrSelect.Checked = false;
                     pictureBox.Cursor = Cursors.Default;
                     pictureBox.Invalidate();
-                    lblStatus.Text = "已取消 OCR 框选。";
+                    lblStatus.Text = "已退出连续 OCR 框选模式。";
                 }
                 else
                 {
@@ -1386,7 +1387,7 @@ namespace ScreenCaptureToolCN
             btnOcrSelect.Checked = isSelectingOcr;
             pictureBox.Cursor = isSelectingOcr ? Cursors.Cross : Cursors.Default;
             lblStatus.Text = isSelectingOcr
-                ? "请在图片上拖动鼠标框选 OCR 识别区域。"
+                ? "已进入连续 OCR 框选模式，请在图片上拖动鼠标；按 Esc 或再次点击按钮可退出。"
                 : "OCR 框选已关闭。";
             pictureBox.Invalidate();
         }
@@ -1428,6 +1429,8 @@ namespace ScreenCaptureToolCN
 
             if (selectionRect.Width < 8 || selectionRect.Height < 8)
             {
+                selectionRect = Rectangle.Empty;
+                pictureBox.Invalidate();
                 lblStatus.Text = "OCR 区域太小，请重新框选。";
                 return;
             }
@@ -1436,19 +1439,36 @@ namespace ScreenCaptureToolCN
             {
                 var imageRect = ScaleRectToImage(selectionRect);
                 var text = OcrHelper.RecognizeBitmap(CropBitmap(previewBitmap, imageRect));
-                txtOcrResult.Text = text;
-                lblStatus.Text = string.IsNullOrWhiteSpace(text) ? "OCR 已完成，但没有识别到明显文字。" : "OCR 识别完成。";
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    lblStatus.Text = "本次 OCR 未识别到明显文字，可继续框选。";
+                }
+                else
+                {
+                    if (!string.IsNullOrWhiteSpace(txtOcrResult.Text))
+                    {
+                        txtOcrResult.AppendText(Environment.NewLine);
+                    }
+
+                    txtOcrResult.AppendText(text);
+                    ocrAppendCount++; // 连续 OCR 追加计数
+                    lblStatus.Text = "OCR 已追加第 " + ocrAppendCount + " 段文本，可继续框选。";
+                }
             }
             catch (Exception ex)
             {
-                lblStatus.Text = "OCR 识别失败。";
+                lblStatus.Text = "OCR 识别失败，可继续框选重试。";
                 MessageBox.Show("OCR 识别失败：" + ex.Message, "窗口截图工具", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             finally
             {
-                isSelectingOcr = false;
-                btnOcrSelect.Checked = false;
-                pictureBox.Cursor = Cursors.Default;
+                selectionRect = Rectangle.Empty;
+                pictureBox.Invalidate();
+                if (isSelectingOcr)
+                {
+                    btnOcrSelect.Checked = true;
+                    pictureBox.Cursor = Cursors.Cross;
+                }
             }
         }
 
