@@ -56,13 +56,54 @@ jobs:
           $match = [regex]::Match($content, $pattern)
 
           if (-not $match.Success) {
-            throw "Cannot find changelog section for tag [$tag] in CHANGELOG.md"
+            $availableHeaders = [regex]::Matches($content, '(?m)^## \[(.+?)\].*$') |
+              ForEach-Object { $_.Value.Trim() }
+
+            $headersText = if ($availableHeaders.Count -gt 0) {
+              ($availableHeaders -join "`n")
+            }
+            else {
+              "(no version headers found)"
+            }
+
+            $hint = @(
+              "Cannot find changelog section for tag [$tag] in CHANGELOG.md.",
+              "Possible cause: the tag points to an older commit that does not yet contain the matching changelog entry.",
+              "Detected headings in current CHANGELOG.md:",
+              $headersText
+            ) -join "`n"
+
+            throw $hint
           }
 
           $notes = $match.Value.Trim()
           Set-Content -LiteralPath $releaseNotesPath -Value $notes -Encoding UTF8
 
           "RELEASE_NOTES_PATH=$releaseNotesPath" >> $env:GITHUB_ENV
+
+      - name: Debug tag commit when changelog extraction fails
+        if: failure()
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+
+          Write-Host "Release notes extraction failed for tag: $tag"
+          Write-Host "Current commit: $(git rev-parse HEAD)"
+          Write-Host "Recent commits:"
+          git --no-pager log --oneline -n 5
+
+          Write-Host ""
+          Write-Host "CHANGELOG.md headings in the checked out tag commit:"
+          if (Test-Path "CHANGELOG.md") {
+            Select-String -Path "CHANGELOG.md" -Pattern '^## \[' | ForEach-Object { $_.Line }
+          }
+          else {
+            Write-Host "CHANGELOG.md not found in checked out sources."
+          }
+
+          Write-Host ""
+          Write-Host "Tip: make sure CHANGELOG.md is committed before creating and pushing the tag."
+          exit 1
 
       - name: Build release archive
         shell: pwsh
