@@ -79,17 +79,46 @@ function Invoke-Git {
         Ensure-GitCommand
     }
 
-    $output = & $script:GitCommand @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $script:GitCommand
+    $psi.WorkingDirectory = (Get-Location).Path
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    foreach ($argument in $Arguments) {
+        [void]$psi.ArgumentList.Add($argument)
+    }
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+
+    [void]$process.Start()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+
+    $exitCode = $process.ExitCode
+    $combinedOutput = (@($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine
+    $combinedOutput = $combinedOutput.Trim()
 
     if (-not $AllowFailure -and $exitCode -ne 0) {
-        $text = if ($output) { ($output | Out-String).Trim() } else { "git $($Arguments -join ' ') failed." }
+        $text = if ($combinedOutput) { $combinedOutput } else { "git $($Arguments -join ' ') failed." }
         Fail $text
+    }
+
+    if ($stderr -and $exitCode -eq 0) {
+        $stderr.Trim().Split("`r?`n") | ForEach-Object {
+            if (-not [string]::IsNullOrWhiteSpace($_)) {
+                Write-Warning $_.Trim()
+            }
+        }
     }
 
     return [pscustomobject]@{
         ExitCode = $exitCode
-        Output   = ($output | Out-String).Trim()
+        Output   = $combinedOutput
     }
 }
 
