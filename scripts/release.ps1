@@ -178,10 +178,21 @@ function Test-ChangelogEntry {
     return [regex]::IsMatch($content, $pattern)
 }
 
+function Get-PreferredNewLine {
+    param([string]$Content)
+
+    if ($Content -match "`r`n") {
+        return "`r`n"
+    }
+
+    return "`n"
+}
+
 function New-ChangelogBulletBlock {
     param(
         [string]$Title,
-        [string[]]$Items
+        [string[]]$Items,
+        [string]$NewLine = "`r`n"
     )
 
     $lines = @("### $Title")
@@ -192,7 +203,7 @@ function New-ChangelogBulletBlock {
         $lines += '- TBD'
     }
 
-    return ($lines -join "`r`n")
+    return ($lines -join $NewLine)
 }
 
 function Add-ChangelogEntry {
@@ -215,19 +226,20 @@ function Add-ChangelogEntry {
     }
 
     $content = Get-Content -LiteralPath $ChangelogPath -Raw -Encoding UTF8
+    $newLine = Get-PreferredNewLine -Content $content
     $title = if ($IsTrial) { "Trial V$DisplayVersion" } else { "Release V$DisplayVersion" }
 
     $sectionLines = @(
         "## [$TagName] - $title",
         '',
-        (New-ChangelogBulletBlock -Title 'Added' -Items $AddedItems),
+        (New-ChangelogBulletBlock -Title 'Added' -Items $AddedItems -NewLine $newLine),
         '',
-        (New-ChangelogBulletBlock -Title 'Fixed' -Items $FixedItems),
+        (New-ChangelogBulletBlock -Title 'Fixed' -Items $FixedItems -NewLine $newLine),
         '',
-        (New-ChangelogBulletBlock -Title 'Changed' -Items $ChangedItems),
+        (New-ChangelogBulletBlock -Title 'Changed' -Items $ChangedItems -NewLine $newLine),
         ''
     )
-    $newSection = ($sectionLines -join "`r`n")
+    $newSection = ($sectionLines -join $newLine)
 
     $unreleasedPattern = '(?s)(## \[未发布\]\s*.*?)(?=\r?\n## \[|\z)'
     if ([regex]::IsMatch($content, $unreleasedPattern)) {
@@ -236,13 +248,13 @@ function Add-ChangelogEntry {
             $unreleasedPattern,
             {
                 param($match)
-                $match.Value.TrimEnd() + "`r`n`r`n" + $newSection
+                $match.Value.TrimEnd() + $newLine + $newLine + $newSection
             },
             1
         )
     }
     else {
-        $content = $content.TrimEnd() + "`r`n`r`n" + $newSection
+        $content = $content.TrimEnd() + $newLine + $newLine + $newSection
     }
 
     Set-Content -LiteralPath $ChangelogPath -Value $content -Encoding UTF8
@@ -362,6 +374,13 @@ if ([string]::IsNullOrWhiteSpace($repoRoot)) {
 
 Set-Location -LiteralPath $repoRoot
 
+if (-not $Force) {
+    Write-Step "Checking whether the working tree is clean"
+    if (-not (Test-WorkingTreeClean)) {
+        Fail "Working tree has uncommitted changes. Commit or clean them first, or use -Force if you really want to continue."
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($Version)) {
     Write-Host "No -Version provided. Entering interactive release mode." -ForegroundColor Yellow
     $Version = Read-Host 'Enter version (for example: 1.2 or 2.0.3)'
@@ -423,13 +442,6 @@ if (-not $Force) {
         -AddedItems $Added `
         -FixedItems $Fixed `
         -ChangedItems $Changed
-}
-
-if (-not $Force) {
-    Write-Step "Checking whether the working tree is clean"
-    if (-not (Test-WorkingTreeClean)) {
-        Fail "Working tree has uncommitted changes. Commit or clean them first, or use -Force if you really want to continue."
-    }
 }
 
 Write-Step "Checking whether CHANGELOG.md contains the target version section"

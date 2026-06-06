@@ -6,6 +6,17 @@
 
 - 暂无
 
+## [v1.2-trial] - Trial V1.2
+
+### Added
+- TBD
+
+### Fixed
+- TBD
+
+### Changed
+- TBD
+
 ## [v1.1] - 正式版 V1.1
 
 ### 发布定位
@@ -95,15 +106,4 @@
 ### 调整
 - ...
 ```
-
-## [v1.2-trial] - Trial V1.2
-
-### Added
-- TBD
-
-### Fixed
-- TBD
-
-### Changed
-- TBD
 
