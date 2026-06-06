@@ -21,6 +21,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$script:GitCommand = $null
 
 function Write-Step {
     param([string]$Message)
@@ -33,9 +34,37 @@ function Fail {
 }
 
 function Ensure-GitCommand {
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Fail "Git 未安装或未加入 PATH。"
+    $gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue
+    if (-not $gitCmd) {
+        $gitCmd = Get-Command git -ErrorAction SilentlyContinue
     }
+
+    if ($gitCmd) {
+        $script:GitCommand = $gitCmd.Source
+        return
+    }
+
+    $candidatePaths = @(
+        "$env:ProgramFiles\Git\cmd\git.exe",
+        "$env:ProgramFiles\Git\bin\git.exe",
+        "$env:ProgramFiles(x86)\Git\cmd\git.exe",
+        "$env:ProgramFiles(x86)\Git\bin\git.exe",
+        "$env:LocalAppData\Programs\Git\cmd\git.exe",
+        "$env:LocalAppData\Programs\Git\bin\git.exe"
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($path in $candidatePaths) {
+        if (Test-Path -LiteralPath $path) {
+            $script:GitCommand = $path
+            $gitDir = Split-Path -Path $path -Parent
+            if ($env:PATH -notlike "*$gitDir*") {
+                $env:PATH = "$gitDir;$env:PATH"
+            }
+            return
+        }
+    }
+
+    Fail "Git is not installed or not available in PATH. Install Git or add git.exe to PATH."
 }
 
 function Invoke-Git {
@@ -46,11 +75,15 @@ function Invoke-Git {
         [switch]$AllowFailure
     )
 
-    $output = & git @Arguments 2>&1
+    if (-not $script:GitCommand) {
+        Ensure-GitCommand
+    }
+
+    $output = & $script:GitCommand @Arguments 2>&1
     $exitCode = $LASTEXITCODE
 
     if (-not $AllowFailure -and $exitCode -ne 0) {
-        $text = if ($output) { ($output | Out-String).Trim() } else { "git $($Arguments -join ' ') 执行失败。" }
+        $text = if ($output) { ($output | Out-String).Trim() } else { "git $($Arguments -join ' ') failed." }
         Fail $text
     }
 
@@ -63,6 +96,20 @@ function Invoke-Git {
 function Test-WorkingTreeClean {
     $status = Invoke-Git -Arguments @('status', '--short')
     return [string]::IsNullOrWhiteSpace($status.Output)
+}
+
+function Get-CurrentBranchName {
+    $symbolicRef = Invoke-Git -Arguments @('symbolic-ref', '--short', 'HEAD') -AllowFailure
+    if ($symbolicRef.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($symbolicRef.Output)) {
+        return $symbolicRef.Output.Trim()
+    }
+
+    $nameRev = Invoke-Git -Arguments @('rev-parse', '--abbrev-ref', 'HEAD') -AllowFailure
+    if ($nameRev.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($nameRev.Output) -and $nameRev.Output.Trim() -ne 'HEAD') {
+        return $nameRev.Output.Trim()
+    }
+
+    Fail 'Unable to determine current Git branch name.'
 }
 
 function Test-RemoteBranchExists {
@@ -93,7 +140,7 @@ function Test-ChangelogEntry {
     )
 
     if (-not (Test-Path -LiteralPath $ChangelogPath)) {
-        Fail "未找到 $ChangelogPath。"
+        Fail "Cannot find $ChangelogPath."
     }
 
     $content = Get-Content -LiteralPath $ChangelogPath -Raw -Encoding UTF8
@@ -113,7 +160,7 @@ function New-ChangelogBulletBlock {
         $lines += $Items | ForEach-Object { "- $_" }
     }
     else {
-        $lines += '- 暂无'
+        $lines += '- TBD'
     }
 
     return ($lines -join "`r`n")
@@ -131,7 +178,7 @@ function Add-ChangelogEntry {
     )
 
     if (-not (Test-Path -LiteralPath $ChangelogPath)) {
-        Fail "未找到 $ChangelogPath。"
+        Fail "Cannot find $ChangelogPath."
     }
 
     if (Test-ChangelogEntry -ChangelogPath $ChangelogPath -TagName $TagName) {
@@ -139,16 +186,16 @@ function Add-ChangelogEntry {
     }
 
     $content = Get-Content -LiteralPath $ChangelogPath -Raw -Encoding UTF8
-    $title = if ($IsTrial) { "试用版 V$DisplayVersion" } else { "正式版 V$DisplayVersion" }
+    $title = if ($IsTrial) { "Trial V$DisplayVersion" } else { "Release V$DisplayVersion" }
 
     $sectionLines = @(
         "## [$TagName] - $title",
         '',
-        (New-ChangelogBulletBlock -Title '新增' -Items $AddedItems),
+        (New-ChangelogBulletBlock -Title 'Added' -Items $AddedItems),
         '',
-        (New-ChangelogBulletBlock -Title '修复' -Items $FixedItems),
+        (New-ChangelogBulletBlock -Title 'Fixed' -Items $FixedItems),
         '',
-        (New-ChangelogBulletBlock -Title '调整' -Items $ChangedItems),
+        (New-ChangelogBulletBlock -Title 'Changed' -Items $ChangedItems),
         ''
     )
     $newSection = ($sectionLines -join "`r`n")
@@ -180,18 +227,23 @@ function Read-YesNo {
     )
 
     $suffix = if ($Default) { '[Y/n]' } else { '[y/N]' }
-    $inputValue = Read-Host "$Prompt $suffix"
 
-    if ([string]::IsNullOrWhiteSpace($inputValue)) {
-        return $Default
-    }
+    while ($true) {
+        $inputValue = Read-Host "$Prompt $suffix"
 
-    switch ($inputValue.Trim().ToLowerInvariant()) {
-        'y' { return $true }
-        'yes' { return $true }
-        'n' { return $false }
-        'no' { return $false }
-        default { Fail "无法识别输入：[$inputValue]，请输入 y 或 n。" }
+        if ([string]::IsNullOrWhiteSpace($inputValue)) {
+            return $Default
+        }
+
+        switch ($inputValue.Trim().ToLowerInvariant()) {
+            'y' { return $true }
+            'yes' { return $true }
+            'n' { return $false }
+            'no' { return $false }
+            default {
+                Write-Host "Unrecognized input: [$inputValue]. Please enter y or n." -ForegroundColor Yellow
+            }
+        }
     }
 }
 
@@ -249,26 +301,26 @@ function Confirm-ReleasePlan {
         [string[]]$ChangedItems
     )
 
-    Write-Host "`n==== 发版确认摘要 ====" -ForegroundColor Yellow
-    Write-Host "分支            : $BranchName"
-    Write-Host "Tag             : $TagName"
-    Write-Host "发布类型        : $(if ($IsTrial) { '试用版' } else { '正式版' })"
-    Write-Host "自动初始化日志  : $(if ($WillInitChangelog) { '是' } else { '否' })"
-    Write-Host "推送当前分支    : $(if ($WillPushBranch) { '是' } else { '否' })"
-    Write-Host "打开 GitHub 页面: $(if ($WillOpenWeb) { '是' } else { '否' })"
+    Write-Host "`n==== Release confirmation summary ====" -ForegroundColor Yellow
+    Write-Host "Branch           : $BranchName"
+    Write-Host "Tag              : $TagName"
+    Write-Host "Release type     : $(if ($IsTrial) { 'Trial' } else { 'Formal' })"
+    Write-Host "Init changelog   : $(if ($WillInitChangelog) { 'Yes' } else { 'No' })"
+    Write-Host "Push branch      : $(if ($WillPushBranch) { 'Yes' } else { 'No' })"
+    Write-Host "Open GitHub pages: $(if ($WillOpenWeb) { 'Yes' } else { 'No' })"
 
     if ($WillInitChangelog) {
-        $addedText = if ($AddedItems.Count -gt 0) { $AddedItems -join '；' } else { '暂无' }
-        $fixedText = if ($FixedItems.Count -gt 0) { $FixedItems -join '；' } else { '暂无' }
-        $changedText = if ($ChangedItems.Count -gt 0) { $ChangedItems -join '；' } else { '暂无' }
+        $addedText = if ($AddedItems.Count -gt 0) { $AddedItems -join '; ' } else { 'TBD' }
+        $fixedText = if ($FixedItems.Count -gt 0) { $FixedItems -join '; ' } else { 'TBD' }
+        $changedText = if ($ChangedItems.Count -gt 0) { $ChangedItems -join '; ' } else { 'TBD' }
 
-        Write-Host "新增            : $addedText"
-        Write-Host "修复            : $fixedText"
-        Write-Host "调整            : $changedText"
+        Write-Host "Added            : $addedText"
+        Write-Host "Fixed            : $fixedText"
+        Write-Host "Changed          : $changedText"
     }
 
-    if (-not (Read-YesNo -Prompt '确认继续执行发版？' -Default $false)) {
-        Fail '已取消发版。'
+    if (-not (Read-YesNo -Prompt 'Continue release?' -Default $false)) {
+        Fail 'Release cancelled.'
     }
 }
 
@@ -276,56 +328,56 @@ Ensure-GitCommand
 
 $repoRoot = (Invoke-Git -Arguments @('rev-parse', '--show-toplevel')).Output
 if ([string]::IsNullOrWhiteSpace($repoRoot)) {
-    Fail "当前目录不是 Git 仓库。"
+    Fail "Current directory is not a Git repository."
 }
 
 Set-Location -LiteralPath $repoRoot
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    Write-Host "未传入 -Version，进入交互式发版模式。" -ForegroundColor Yellow
-    $Version = Read-Host '请输入版本号（例如 1.2 或 2.0.3）'
+    Write-Host "No -Version provided. Entering interactive release mode." -ForegroundColor Yellow
+    $Version = Read-Host 'Enter version (for example: 1.2 or 2.0.3)'
 
     if ([string]::IsNullOrWhiteSpace($Version)) {
-        Fail '版本号不能为空。'
+        Fail 'Version cannot be empty.'
     }
 
     if (-not $PSBoundParameters.ContainsKey('Trial')) {
-        $Trial = Read-YesNo -Prompt '是否发布为试用版（tag 将带 -trial）？' -Default $false
+        $Trial = Read-YesNo -Prompt 'Release as trial version (tag will include -trial)?' -Default $false
     }
 
     if (-not $PSBoundParameters.ContainsKey('InitChangelog')) {
-        $InitChangelog = Read-YesNo -Prompt '若 CHANGELOG.md 缺少该版本，是否自动初始化？' -Default $true
+        $InitChangelog = Read-YesNo -Prompt 'If CHANGELOG.md does not contain this version, initialize it automatically?' -Default $true
     }
 
     if ($InitChangelog) {
         if ($Added.Count -eq 0) {
-            $Added = Read-ListInput -Prompt '请输入“新增”条目，多个用英文逗号分隔，留空则写入暂无'
+            $Added = Read-ListInput -Prompt 'Enter Added items, separated by commas. Leave empty to use TBD.'
         }
         if ($Fixed.Count -eq 0) {
-            $Fixed = Read-ListInput -Prompt '请输入“修复”条目，多个用英文逗号分隔，留空则写入暂无'
+            $Fixed = Read-ListInput -Prompt 'Enter Fixed items, separated by commas. Leave empty to use TBD.'
         }
         if ($Changed.Count -eq 0) {
-            $Changed = Read-ListInput -Prompt '请输入“调整”条目，多个用英文逗号分隔，留空则写入暂无'
+            $Changed = Read-ListInput -Prompt 'Enter Changed items, separated by commas. Leave empty to use TBD.'
         }
     }
 
     if (-not $PSBoundParameters.ContainsKey('OpenWeb')) {
-        $OpenWeb = Read-YesNo -Prompt '发版成功后是否自动打开 GitHub Releases / Actions 页面？' -Default $true
+        $OpenWeb = Read-YesNo -Prompt 'Open GitHub Releases / Actions pages after success?' -Default $true
     }
 }
 
 $normalizedVersion = $Version.Trim()
 if ($normalizedVersion -notmatch '^\d+(?:\.\d+)*$') {
-    Fail "版本号格式无效：[$Version]。请输入类似 1.1、1.2、2.0.3 的版本号。"
+    Fail "Invalid version format: [$Version]. Use values like 1.1, 1.2, or 2.0.3."
 }
 
 $tag = if ($Trial) { "v$normalizedVersion-trial" } else { "v$normalizedVersion" }
 $changelogPath = Join-Path $repoRoot 'CHANGELOG.md'
-$currentBranch = (Invoke-Git -Arguments @('branch', '--show-current')).Output
+$currentBranch = Get-CurrentBranchName
 
-Write-Host "仓库目录: $repoRoot"
-Write-Host "当前分支: $currentBranch"
-Write-Host "目标 Tag : $tag"
+Write-Host "Repository root: $repoRoot"
+Write-Host "Current branch : $currentBranch"
+Write-Host "Target tag     : $tag"
 
 $willInitChangelog = $InitChangelog -and (-not (Test-ChangelogEntry -ChangelogPath $changelogPath -TagName $tag))
 $willPushBranch = -not $SkipPushMain
@@ -345,20 +397,20 @@ if (-not $Force) {
 }
 
 if (-not $Force) {
-    Write-Step "检查工作区是否干净"
+    Write-Step "Checking whether the working tree is clean"
     if (-not (Test-WorkingTreeClean)) {
-        Fail "工作区存在未提交变更。请先提交或清理后再发版；如确认继续，可追加 -Force。"
+        Fail "Working tree has uncommitted changes. Commit or clean them first, or use -Force if you really want to continue."
     }
 }
 
-Write-Step "检查 CHANGELOG.md 中是否存在对应版本区块"
+Write-Step "Checking whether CHANGELOG.md contains the target version section"
 $changelogCreated = $false
 if (-not (Test-ChangelogEntry -ChangelogPath $changelogPath -TagName $tag)) {
     if (-not $InitChangelog) {
-        Fail "CHANGELOG.md 中未找到对应区块 [$tag]。如需自动初始化，可追加 -InitChangelog。"
+        Fail "CHANGELOG.md does not contain section [$tag]. Use -InitChangelog to create it automatically."
     }
 
-    Write-Step "自动初始化 CHANGELOG.md 版本区块"
+    Write-Step "Initializing CHANGELOG.md version section"
     $changelogCreated = Add-ChangelogEntry `
         -ChangelogPath $changelogPath `
         -TagName $tag `
@@ -369,26 +421,26 @@ if (-not (Test-ChangelogEntry -ChangelogPath $changelogPath -TagName $tag)) {
         -ChangedItems $Changed
 
     if (-not $changelogCreated) {
-        Fail "CHANGELOG.md 初始化失败。"
+        Fail "Failed to initialize CHANGELOG.md."
     }
 
     $defaultCommitMessage = if ($CommitMessage) { $CommitMessage } else { "init changelog for $tag" }
 
-    Write-Step "提交自动生成的 CHANGELOG.md"
+    Write-Step "Committing generated CHANGELOG.md"
     Invoke-Git -Arguments @('add', 'CHANGELOG.md') | Out-Null
     Invoke-Git -Arguments @('commit', '-m', $defaultCommitMessage) | Out-Null
 }
 
-Write-Step "检查本地与远端 Tag 是否已存在"
+Write-Step "Checking whether local or remote tag already exists"
 if (Test-LocalTagExists -TagName $tag) {
-    Fail "本地已存在 Tag [$tag]。如需重发，请先删除本地 Tag：git tag -d $tag"
+    Fail "Local tag [$tag] already exists. Delete it first: git tag -d $tag"
 }
 if (Test-RemoteTagExists -TagName $tag) {
-    Fail "远端已存在 Tag [$tag]。如需重发，请先删除远端 Tag：git push origin :refs/tags/$tag"
+    Fail "Remote tag [$tag] already exists. Delete it first: git push origin :refs/tags/$tag"
 }
 
 if (-not $SkipPushMain) {
-    Write-Step "推送当前分支到 origin/$currentBranch"
+    Write-Step "Pushing current branch to origin/$currentBranch"
 
     if (-not (Test-RemoteBranchExists -BranchName $currentBranch)) {
         Invoke-Git -Arguments @('push', '-u', 'origin', $currentBranch) | Out-Null
@@ -398,25 +450,25 @@ if (-not $SkipPushMain) {
     }
 }
 else {
-    Write-Step "已跳过 push main/当前分支"
+    Write-Step "Skipping branch push"
 }
 
-Write-Step "创建本地 Tag"
+Write-Step "Creating local tag"
 Invoke-Git -Arguments @('tag', $tag) | Out-Null
 
 try {
-    Write-Step "推送 Tag 到远端"
+    Write-Step "Pushing tag to remote"
     Invoke-Git -Arguments @('push', 'origin', $tag) | Out-Null
 }
 catch {
-    Write-Warning "推送 Tag 失败，正在回滚本地 Tag [$tag]..."
+    Write-Warning "Failed to push tag. Rolling back local tag [$tag]..."
     Invoke-Git -Arguments @('tag', '-d', $tag) -AllowFailure | Out-Null
     throw
 }
 
-Write-Step "校验远端 Tag 是否存在"
+Write-Step "Verifying remote tag"
 if (-not (Test-RemoteTagExists -TagName $tag)) {
-    Fail "远端未检测到 Tag [$tag]，请稍后手动执行：git ls-remote --tags origin $tag"
+    Fail "Remote tag [$tag] was not detected. You can verify manually with: git ls-remote --tags origin $tag"
 }
 
 $remoteUrl = (Invoke-Git -Arguments @('remote', 'get-url', 'origin')).Output
@@ -424,28 +476,28 @@ $repoWebUrl = Convert-RemoteToWebUrl -RemoteUrl $remoteUrl
 $releasesWebUrl = if ($repoWebUrl) { "$repoWebUrl/releases" } else { $null }
 $actionsWebUrl = if ($repoWebUrl) { "$repoWebUrl/actions" } else { $null }
 
-Write-Host "`n发版完成。" -ForegroundColor Green
-Write-Host "Tag 已推送: $tag" -ForegroundColor Green
-Write-Host "GitHub Actions 将自动触发 Release 工作流。" -ForegroundColor Green
-Write-Host "可检查命令: git ls-remote --tags origin $tag"
-Write-Host "远端地址: $remoteUrl"
+Write-Host "`nRelease completed." -ForegroundColor Green
+Write-Host "Tag pushed      : $tag" -ForegroundColor Green
+Write-Host "GitHub Actions should now start the release workflow." -ForegroundColor Green
+Write-Host "Verify command  : git ls-remote --tags origin $tag"
+Write-Host "Remote URL      : $remoteUrl"
 if ($releasesWebUrl) {
-    Write-Host "Releases 页面: $releasesWebUrl"
+    Write-Host "Releases page   : $releasesWebUrl"
 }
 if ($actionsWebUrl) {
-    Write-Host "Actions 页面 : $actionsWebUrl"
+    Write-Host "Actions page    : $actionsWebUrl"
 }
 
 if ($OpenWeb -and $repoWebUrl) {
-    Write-Step "打开 GitHub Releases / Actions 页面"
+    Write-Step "Opening GitHub Releases / Actions pages"
     Open-Url -Url $releasesWebUrl
     Open-Url -Url $actionsWebUrl
 }
 
 Write-Host ""
-Write-Host "常用示例:"
+Write-Host "Examples:"
 Write-Host "  ./scripts/release.ps1 -Version 1.2"
 Write-Host "  ./scripts/release.ps1 -Version 1.2 -Trial"
-Write-Host "  ./scripts/release.ps1 -Version 1.2 -InitChangelog -Added '新增功能 A' -Changed '界面文案调整'"
+Write-Host "  ./scripts/release.ps1 -Version 1.2 -InitChangelog -Added 'Feature A' -Changed 'UI text update'"
 Write-Host "  ./scripts/release.ps1 -OpenWeb"
-Write-Host "  ./scripts/release.ps1   # 不带参数时进入交互模式"
+Write-Host "  ./scripts/release.ps1   # interactive mode"
