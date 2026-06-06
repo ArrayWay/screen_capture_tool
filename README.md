@@ -137,6 +137,8 @@
 
 同时提供批处理启动器：`release.bat`
 
+双击 `release.bat` 时会进入交互模式，并在结束后自动暂停，避免窗口一闪而过。
+
 使用前请先确保：
 
 - 当前代码改动已提交完成，或工作区处于可发布状态
@@ -157,18 +159,20 @@
 也可以直接使用批处理启动器：
 
 ```bat README.md
-release.bat 1.2
-release.bat 1.2 -Trial
+release.bat -Version 1.2
+release.bat -Version 1.2 -Trial
 ```
 
 脚本会自动执行以下动作：
 
+- 先显示本次发版确认摘要，并要求最终确认
 - 检查工作区是否干净
 - 检查 `CHANGELOG.md` 中是否存在对应 tag 区块
 - 如缺失且你传入 `-InitChangelog`，自动初始化版本区块并提交 `CHANGELOG.md`
 - 推送当前分支到远端
 - 创建并推送 tag
 - 触发 GitHub Actions 自动发布流程
+- 可选自动打开 GitHub Releases / Actions 页面
 
 如果不传 `-Version`，脚本会自动进入交互模式，逐项询问：
 
@@ -176,6 +180,8 @@ release.bat 1.2 -Trial
 - 是否试用版
 - 是否自动初始化 `CHANGELOG.md`
 - 新增 / 修复 / 调整内容
+- 是否自动打开 GitHub Releases / Actions 页面
+- 最终是否确认执行发版
 
 如需自动初始化 `CHANGELOG.md` 版本区块，可使用：
 
@@ -203,10 +209,28 @@ release.bat 1.2 -Trial
 release.bat
 ```
 
+如需发版完成后自动打开 GitHub 页面，可使用：
+
+```powershell README.md
+./scripts/release.ps1 -Version 1.2 -OpenWeb
+```
+
+或：
+
+```bat README.md
+release.bat -Version 1.2 -OpenWeb
+```
+
 如需跳过推送当前分支，可使用：
 
 ```powershell README.md
 ./scripts/release.ps1 -Version 1.2 -SkipPushMain
+```
+
+如需跳过发版前确认摘要与工作区干净检查，可使用：
+
+```powershell README.md
+./scripts/release.ps1 -Version 1.2 -Force
 ```
 
 ## 更新日志

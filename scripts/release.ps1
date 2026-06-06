@@ -15,6 +15,8 @@ param(
 
     [switch]$SkipPushMain,
 
+    [switch]$OpenWeb,
+
     [switch]$Force
 )
 
@@ -204,6 +206,72 @@ function Read-ListInput {
     return $raw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 }
 
+function Convert-RemoteToWebUrl {
+    param([string]$RemoteUrl)
+
+    if ([string]::IsNullOrWhiteSpace($RemoteUrl)) {
+        return $null
+    }
+
+    $url = $RemoteUrl.Trim()
+
+    if ($url -match '^https://github\.com/(?<path>.+?)(?:\.git)?/?$') {
+        return "https://github.com/$($Matches.path)"
+    }
+
+    if ($url -match '^git@github\.com:(?<path>.+?)(?:\.git)?$') {
+        return "https://github.com/$($Matches.path)"
+    }
+
+    return $null
+}
+
+function Open-Url {
+    param([string]$Url)
+
+    if ([string]::IsNullOrWhiteSpace($Url)) {
+        return
+    }
+
+    Start-Process $Url | Out-Null
+}
+
+function Confirm-ReleasePlan {
+    param(
+        [string]$BranchName,
+        [string]$TagName,
+        [bool]$IsTrial,
+        [bool]$WillInitChangelog,
+        [bool]$WillPushBranch,
+        [bool]$WillOpenWeb,
+        [string[]]$AddedItems,
+        [string[]]$FixedItems,
+        [string[]]$ChangedItems
+    )
+
+    Write-Host "`n==== 发版确认摘要 ====" -ForegroundColor Yellow
+    Write-Host "分支            : $BranchName"
+    Write-Host "Tag             : $TagName"
+    Write-Host "发布类型        : $(if ($IsTrial) { '试用版' } else { '正式版' })"
+    Write-Host "自动初始化日志  : $(if ($WillInitChangelog) { '是' } else { '否' })"
+    Write-Host "推送当前分支    : $(if ($WillPushBranch) { '是' } else { '否' })"
+    Write-Host "打开 GitHub 页面: $(if ($WillOpenWeb) { '是' } else { '否' })"
+
+    if ($WillInitChangelog) {
+        $addedText = if ($AddedItems.Count -gt 0) { $AddedItems -join '；' } else { '暂无' }
+        $fixedText = if ($FixedItems.Count -gt 0) { $FixedItems -join '；' } else { '暂无' }
+        $changedText = if ($ChangedItems.Count -gt 0) { $ChangedItems -join '；' } else { '暂无' }
+
+        Write-Host "新增            : $addedText"
+        Write-Host "修复            : $fixedText"
+        Write-Host "调整            : $changedText"
+    }
+
+    if (-not (Read-YesNo -Prompt '确认继续执行发版？' -Default $false)) {
+        Fail '已取消发版。'
+    }
+}
+
 Ensure-GitCommand
 
 $repoRoot = (Invoke-Git -Arguments @('rev-parse', '--show-toplevel')).Output
@@ -240,6 +308,10 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
             $Changed = Read-ListInput -Prompt '请输入“调整”条目，多个用英文逗号分隔，留空则写入暂无'
         }
     }
+
+    if (-not $PSBoundParameters.ContainsKey('OpenWeb')) {
+        $OpenWeb = Read-YesNo -Prompt '发版成功后是否自动打开 GitHub Releases / Actions 页面？' -Default $true
+    }
 }
 
 $normalizedVersion = $Version.Trim()
@@ -254,6 +326,23 @@ $currentBranch = (Invoke-Git -Arguments @('branch', '--show-current')).Output
 Write-Host "仓库目录: $repoRoot"
 Write-Host "当前分支: $currentBranch"
 Write-Host "目标 Tag : $tag"
+
+$willInitChangelog = $InitChangelog -and (-not (Test-ChangelogEntry -ChangelogPath $changelogPath -TagName $tag))
+$willPushBranch = -not $SkipPushMain
+$willOpenWeb = [bool]$OpenWeb
+
+if (-not $Force) {
+    Confirm-ReleasePlan `
+        -BranchName $currentBranch `
+        -TagName $tag `
+        -IsTrial ([bool]$Trial) `
+        -WillInitChangelog $willInitChangelog `
+        -WillPushBranch $willPushBranch `
+        -WillOpenWeb $willOpenWeb `
+        -AddedItems $Added `
+        -FixedItems $Fixed `
+        -ChangedItems $Changed
+}
 
 if (-not $Force) {
     Write-Step "检查工作区是否干净"
@@ -330,16 +419,33 @@ if (-not (Test-RemoteTagExists -TagName $tag)) {
     Fail "远端未检测到 Tag [$tag]，请稍后手动执行：git ls-remote --tags origin $tag"
 }
 
-$releaseUrl = (Invoke-Git -Arguments @('remote', 'get-url', 'origin')).Output
+$remoteUrl = (Invoke-Git -Arguments @('remote', 'get-url', 'origin')).Output
+$repoWebUrl = Convert-RemoteToWebUrl -RemoteUrl $remoteUrl
+$releasesWebUrl = if ($repoWebUrl) { "$repoWebUrl/releases" } else { $null }
+$actionsWebUrl = if ($repoWebUrl) { "$repoWebUrl/actions" } else { $null }
 
 Write-Host "`n发版完成。" -ForegroundColor Green
 Write-Host "Tag 已推送: $tag" -ForegroundColor Green
 Write-Host "GitHub Actions 将自动触发 Release 工作流。" -ForegroundColor Green
 Write-Host "可检查命令: git ls-remote --tags origin $tag"
-Write-Host "远端地址: $releaseUrl"
+Write-Host "远端地址: $remoteUrl"
+if ($releasesWebUrl) {
+    Write-Host "Releases 页面: $releasesWebUrl"
+}
+if ($actionsWebUrl) {
+    Write-Host "Actions 页面 : $actionsWebUrl"
+}
+
+if ($OpenWeb -and $repoWebUrl) {
+    Write-Step "打开 GitHub Releases / Actions 页面"
+    Open-Url -Url $releasesWebUrl
+    Open-Url -Url $actionsWebUrl
+}
+
 Write-Host ""
 Write-Host "常用示例:"
 Write-Host "  ./scripts/release.ps1 -Version 1.2"
 Write-Host "  ./scripts/release.ps1 -Version 1.2 -Trial"
 Write-Host "  ./scripts/release.ps1 -Version 1.2 -InitChangelog -Added '新增功能 A' -Changed '界面文案调整'"
+Write-Host "  ./scripts/release.ps1 -OpenWeb"
 Write-Host "  ./scripts/release.ps1   # 不带参数时进入交互模式"
