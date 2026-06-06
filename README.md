@@ -131,6 +131,84 @@
 
 当前如需发布正式版 `V1.1`，只需在包含对应 `CHANGELOG.md` 条目的提交上推送 tag `v1.1` 即可。后续如要调整自动发布正文，直接编辑 `CHANGELOG.md` 中对应版本区块即可。  <!-- 说明自动发布入口，便于后续维护 -->
 
+### 一键发版脚本
+
+仓库已提供 PowerShell 发版脚本：`scripts/release.ps1`
+
+同时提供批处理启动器：`release.bat`
+
+使用前请先确保：
+
+- 当前代码改动已提交完成，或工作区处于可发布状态
+- 本地可正常执行 `git`
+
+正式版示例：
+
+```powershell README.md
+./scripts/release.ps1 -Version 1.2
+```
+
+试用版示例：
+
+```powershell README.md
+./scripts/release.ps1 -Version 1.2 -Trial
+```
+
+也可以直接使用批处理启动器：
+
+```bat README.md
+release.bat 1.2
+release.bat 1.2 -Trial
+```
+
+脚本会自动执行以下动作：
+
+- 检查工作区是否干净
+- 检查 `CHANGELOG.md` 中是否存在对应 tag 区块
+- 如缺失且你传入 `-InitChangelog`，自动初始化版本区块并提交 `CHANGELOG.md`
+- 推送当前分支到远端
+- 创建并推送 tag
+- 触发 GitHub Actions 自动发布流程
+
+如果不传 `-Version`，脚本会自动进入交互模式，逐项询问：
+
+- 版本号
+- 是否试用版
+- 是否自动初始化 `CHANGELOG.md`
+- 新增 / 修复 / 调整内容
+
+如需自动初始化 `CHANGELOG.md` 版本区块，可使用：
+
+```powershell README.md
+./scripts/release.ps1 -Version 1.2 -InitChangelog
+```
+
+如需在初始化时直接写入更新内容，可使用：
+
+```powershell README.md
+./scripts/release.ps1 -Version 1.2 -InitChangelog -Added "新增功能 A","新增功能 B" -Fixed "修复问题 A" -Changed "界面调整"
+```
+
+如果未提供 `-Added`、`-Fixed`、`-Changed`，脚本会自动写入 `- 暂无` 作为占位内容。
+
+如需直接进入交互模式，可使用：
+
+```powershell README.md
+./scripts/release.ps1
+```
+
+或：
+
+```bat README.md
+release.bat
+```
+
+如需跳过推送当前分支，可使用：
+
+```powershell README.md
+./scripts/release.ps1 -Version 1.2 -SkipPushMain
+```
+
 ## 更新日志
 
 详见：[`CHANGELOG.md`](./CHANGELOG.md)
