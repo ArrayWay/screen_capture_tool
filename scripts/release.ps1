@@ -17,7 +17,9 @@ param(
 
     [switch]$OpenWeb,
 
-    [switch]$Force
+    [switch]$Force,
+
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,6 +69,26 @@ function Ensure-GitCommand {
     Fail "Git is not installed or not available in PATH. Install Git or add git.exe to PATH."
 }
 
+function ConvertTo-ProcessArgumentString {
+    param([string[]]$Arguments)
+
+    $escapedArguments = foreach ($argument in $Arguments) {
+        if ($null -eq $argument) {
+            '""'
+            continue
+        }
+
+        if ($argument -match '[\s"]') {
+            '"' + (($argument -replace '(\\*)"', '$1$1\\"') -replace '(\\+)$', '$1$1') + '"'
+        }
+        else {
+            $argument
+        }
+    }
+
+    return ($escapedArguments -join ' ')
+}
+
 function Invoke-Git {
     param(
         [Parameter(Mandatory = $true)]
@@ -81,15 +103,12 @@ function Invoke-Git {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $script:GitCommand
+    $psi.Arguments = ConvertTo-ProcessArgumentString -Arguments $Arguments
     $psi.WorkingDirectory = (Get-Location).Path
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
-
-    foreach ($argument in $Arguments) {
-        [void]$psi.ArgumentList.Add($argument)
-    }
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
@@ -337,6 +356,7 @@ function Confirm-ReleasePlan {
         [bool]$WillInitChangelog,
         [bool]$WillPushBranch,
         [bool]$WillOpenWeb,
+        [bool]$IsDryRun,
         [string[]]$AddedItems,
         [string[]]$FixedItems,
         [string[]]$ChangedItems
@@ -349,6 +369,7 @@ function Confirm-ReleasePlan {
     Write-Host "Init changelog   : $(if ($WillInitChangelog) { 'Yes' } else { 'No' })"
     Write-Host "Push branch      : $(if ($WillPushBranch) { 'Yes' } else { 'No' })"
     Write-Host "Open GitHub pages: $(if ($WillOpenWeb) { 'Yes' } else { 'No' })"
+    Write-Host "Dry run          : $(if ($IsDryRun) { 'Yes' } else { 'No' })"
 
     if ($WillInitChangelog) {
         $addedText = if ($AddedItems.Count -gt 0) { $AddedItems -join '; ' } else { 'TBD' }
@@ -439,6 +460,7 @@ if (-not $Force) {
         -WillInitChangelog $willInitChangelog `
         -WillPushBranch $willPushBranch `
         -WillOpenWeb $willOpenWeb `
+        -IsDryRun ([bool]$DryRun) `
         -AddedItems $Added `
         -FixedItems $Fixed `
         -ChangedItems $Changed
@@ -480,36 +502,45 @@ if (Test-RemoteTagExists -TagName $tag) {
     Fail "Remote tag [$tag] already exists. Delete it first: git push origin :refs/tags/$tag"
 }
 
-if (-not $SkipPushMain) {
-    Write-Step "Pushing current branch to origin/$currentBranch"
-
-    if (-not (Test-RemoteBranchExists -BranchName $currentBranch)) {
-        Invoke-Git -Arguments @('push', '-u', 'origin', $currentBranch) | Out-Null
-    }
-    else {
-        Invoke-Git -Arguments @('push', 'origin', $currentBranch) | Out-Null
-    }
+if ($DryRun) {
+    Write-Step "Dry run summary"
+    Write-Host "No push or tag operations were performed." -ForegroundColor Yellow
+    Write-Host "Would push branch : $(if (-not $SkipPushMain) { "origin/$currentBranch" } else { 'Skipped' })"
+    Write-Host "Would create tag  : $tag"
+    Write-Host "Would push tag    : origin/$tag"
 }
 else {
-    Write-Step "Skipping branch push"
-}
+    if (-not $SkipPushMain) {
+        Write-Step "Pushing current branch to origin/$currentBranch"
 
-Write-Step "Creating local tag"
-Invoke-Git -Arguments @('tag', $tag) | Out-Null
+        if (-not (Test-RemoteBranchExists -BranchName $currentBranch)) {
+            Invoke-Git -Arguments @('push', '-u', 'origin', $currentBranch) | Out-Null
+        }
+        else {
+            Invoke-Git -Arguments @('push', 'origin', $currentBranch) | Out-Null
+        }
+    }
+    else {
+        Write-Step "Skipping branch push"
+    }
 
-try {
-    Write-Step "Pushing tag to remote"
-    Invoke-Git -Arguments @('push', 'origin', $tag) | Out-Null
-}
-catch {
-    Write-Warning "Failed to push tag. Rolling back local tag [$tag]..."
-    Invoke-Git -Arguments @('tag', '-d', $tag) -AllowFailure | Out-Null
-    throw
-}
+    Write-Step "Creating local tag"
+    Invoke-Git -Arguments @('tag', $tag) | Out-Null
 
-Write-Step "Verifying remote tag"
-if (-not (Test-RemoteTagExists -TagName $tag)) {
-    Fail "Remote tag [$tag] was not detected. You can verify manually with: git ls-remote --tags origin $tag"
+    try {
+        Write-Step "Pushing tag to remote"
+        Invoke-Git -Arguments @('push', 'origin', $tag) | Out-Null
+    }
+    catch {
+        Write-Warning "Failed to push tag. Rolling back local tag [$tag]..."
+        Invoke-Git -Arguments @('tag', '-d', $tag) -AllowFailure | Out-Null
+        throw
+    }
+
+    Write-Step "Verifying remote tag"
+    if (-not (Test-RemoteTagExists -TagName $tag)) {
+        Fail "Remote tag [$tag] was not detected. You can verify manually with: git ls-remote --tags origin $tag"
+    }
 }
 
 $remoteUrl = (Invoke-Git -Arguments @('remote', 'get-url', 'origin')).Output
@@ -517,10 +548,17 @@ $repoWebUrl = Convert-RemoteToWebUrl -RemoteUrl $remoteUrl
 $releasesWebUrl = if ($repoWebUrl) { "$repoWebUrl/releases" } else { $null }
 $actionsWebUrl = if ($repoWebUrl) { "$repoWebUrl/actions" } else { $null }
 
-Write-Host "`nRelease completed." -ForegroundColor Green
-Write-Host "Tag pushed      : $tag" -ForegroundColor Green
-Write-Host "GitHub Actions should now start the release workflow." -ForegroundColor Green
-Write-Host "Verify command  : git ls-remote --tags origin $tag"
+if ($DryRun) {
+    Write-Host "`nDry run completed." -ForegroundColor Green
+    Write-Host "No remote changes were made." -ForegroundColor Green
+    Write-Host "Planned tag     : $tag"
+}
+else {
+    Write-Host "`nRelease completed." -ForegroundColor Green
+    Write-Host "Tag pushed      : $tag" -ForegroundColor Green
+    Write-Host "GitHub Actions should now start the release workflow." -ForegroundColor Green
+    Write-Host "Verify command  : git ls-remote --tags origin $tag"
+}
 Write-Host "Remote URL      : $remoteUrl"
 if ($releasesWebUrl) {
     Write-Host "Releases page   : $releasesWebUrl"
@@ -529,7 +567,7 @@ if ($actionsWebUrl) {
     Write-Host "Actions page    : $actionsWebUrl"
 }
 
-if ($OpenWeb -and $repoWebUrl) {
+if ($OpenWeb -and $repoWebUrl -and -not $DryRun) {
     Write-Step "Opening GitHub Releases / Actions pages"
     Open-Url -Url $releasesWebUrl
     Open-Url -Url $actionsWebUrl
@@ -541,4 +579,5 @@ Write-Host "  ./scripts/release.ps1 -Version 1.2"
 Write-Host "  ./scripts/release.ps1 -Version 1.2 -Trial"
 Write-Host "  ./scripts/release.ps1 -Version 1.2 -InitChangelog -Added 'Feature A' -Changed 'UI text update'"
 Write-Host "  ./scripts/release.ps1 -OpenWeb"
+Write-Host "  ./scripts/release.ps1 -Version 1.2 -Trial -DryRun"
 Write-Host "  ./scripts/release.ps1   # interactive mode"
